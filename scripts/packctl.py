@@ -221,8 +221,15 @@ def copy_pack_dir(src, dst, src_label, manifest):
 
 
 def write_manifest(batch, payload, manifest):
+    def public_label(value):
+        for source, alias in manifest["source_labels"]:
+            if value == source or value.startswith(source + "/") or value.startswith(source + ":"):
+                return alias + value[len(source):]
+        return value
+
     included = [
-        {key: value for key, value in item.items() if not key.startswith("_")}
+        {key: public_label(value) if key == "source" else value
+         for key, value in item.items() if not key.startswith("_")}
         for item in manifest["included"]
     ]
     public = {
@@ -230,10 +237,14 @@ def write_manifest(batch, payload, manifest):
         "scanner": PACK_SCANNER_VERSION,
         "created_at": utc_now_iso(),
         "included": included,
-        "excluded": manifest["excluded"],
+        "excluded": [dict(item, path=public_label(item["path"]))
+                     for item in manifest["excluded"]],
     }
     if manifest.get("privacy_acks"):
-        public["privacy_acks"] = manifest["privacy_acks"]
+        public["privacy_acks"] = [
+            dict(item, finding=public_label(item["finding"]),
+                 ack_prefix=public_label(item["ack_prefix"]))
+            for item in manifest["privacy_acks"]]
     for path in (os.path.join(payload, "MANIFEST.json"),
                  os.path.join(batch, "MANIFEST.json")):
         with open(path, "w", encoding="utf-8") as fh:
@@ -337,6 +348,11 @@ def cmd_pack(root, a):
     stage_payload = os.path.join(stage, "payload")
     os.makedirs(stage_payload)
     manifest = {"payload": stage_payload, "included": [], "excluded": []}
+    manifest["source_labels"] = sorted(
+        {(label.rstrip("/\\"), f"input-{index}")
+         for index, (src, path) in enumerate(resolved, 1)
+         for label in (src, os.path.abspath(path))},
+        key=lambda item: len(item[0]), reverse=True)
     acked = []
     try:
         single = a.paths[0] if len(a.paths) == 1 else None
